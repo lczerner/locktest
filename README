@@ -1,0 +1,7 @@
+Simple test program for stress testing atomic bit operations and
+locking. Some of the code borrowed from linux kernel code
+
+gcc test_atomic.c -lpthread -o test_atomic
+
+i=0; while ./test_atomic -r100 -b20 -t600; do echo "OK - $i"; i=$((i+1)); sleep 300; done
+
