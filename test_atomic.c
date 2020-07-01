@@ -222,19 +222,69 @@ static int status;			/* Status to control threads */
 static int num_ref_threads;		/* Number of refcount threads to create */
 static int num_bit_threads;		/* Number of bitops threads to create */
 
+static int ref_delay_mult;
+static int bit_delay_mult;
 
-static void delay(int threads) {
-	int shortdelay_us = 2;
-	int longdelay_ms = 100;
+static unsigned long loops_in_us;
+
+static __always_inline void delay_loop(__u64 __loops)
+{
+	unsigned long loops = (unsigned long)__loops;
+
+	asm volatile(
+		"	test %0,%0	\n"
+		"	jz 3f		\n"
+		"	jmp 1f		\n"
+
+		".align 16		\n"
+		"1:	jmp 2f		\n"
+
+		".align 16		\n"
+		"2:	dec %0		\n"
+		"	jnz 2b		\n"
+		"3:	dec %0		\n"
+
+		: /* we don't need output */
+		:"a" (loops)
+	);
+}
+
+static inline void delay_us(int us)
+{
+	delay_loop(loops_in_us * us);
+}
+
+/*
+ * Get some rough idea of how many loops can we do
+ * in micro second
+ */
+static void measure_delay(void)
+{
+	unsigned long loops = 100 * 4096;
+	struct timespec t1, t2;
+
+	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
+	delay_loop(loops);
+	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
+
+	loops_in_us = loops / ((t2.tv_nsec - t1.tv_nsec) / 1000);
+}
+
+static inline void delay(int threads, int delay) {
+	int shortdelay_us = 2 * delay;
+	int longdelay_us = 100 * 1000 * delay;
+
+	if (delay = 0)
+		return;
 
 	/*
 	 * Short delay to emulate code and occasional long delay
 	 * to emulate longer stalls
 	 */
-	if (!(rand() % (threads * 1000 * longdelay_ms)))
-		usleep(longdelay_ms * 1000);
-	if (!(rand() % (threads * shortdelay_us)))
-		usleep(shortdelay_us);
+	if (!(rand() % (threads * 2000 * longdelay_us)))
+		delay_us(longdelay_us);
+	if (!(rand() % (threads * 2 * shortdelay_us)))
+		delay_us(shortdelay_us);
 }
 
 
@@ -254,24 +304,24 @@ static void *thread_refcount(void *arg)
 	struct thread_info *tinfo = arg;
 
 	do {
-		delay(num_ref_threads);
+		sched_yield();
 
 		bit_spin_lock(LOCK_BIT, &bh->b_state);
 		if (jh->b_jcount <= 0)
 			test_failed();
 		jh->b_jcount++;
 		tinfo->n_operations++;
-		delay(num_ref_threads);
+		delay(num_ref_threads, ref_delay_mult);
 		bit_spin_unlock(LOCK_BIT, &bh->b_state);
 
-		delay(num_ref_threads * 2);
+		sched_yield();
 		
 		bit_spin_lock(LOCK_BIT, &bh->b_state);
 		--jh->b_jcount;
 		if (jh->b_jcount <= 0)
 			test_failed();
 		tinfo->n_operations++;
-		delay(num_ref_threads);
+		delay(num_ref_threads, ref_delay_mult);
 		bit_spin_unlock(LOCK_BIT, &bh->b_state);
 
 	} while (status == RUNNING);
@@ -289,14 +339,16 @@ static void *thread_bitops(void *arg)
 	struct thread_info *tinfo = arg;
 
 	do {
-		delay(num_bit_threads);
+		delay(num_bit_threads, bit_delay_mult);
 		nr = rand() % 64;
 		if (nr == LOCK_BIT)
 			nr--;
 		set_bit(nr, &bh->b_state);
 		
+		sched_yield();
+
 		tinfo->n_operations++;
-		delay(num_bit_threads);
+		delay(num_bit_threads, bit_delay_mult);
 
 		clear_bit(nr, &bh->b_state);
 		
@@ -331,6 +383,15 @@ static void print_stats(struct thread_info *tinfo, int threads,
 		 ref ? "refcounting" : "set_bit/clear_bit", sum, max, min);
 }
 
+static inline void print_usage(char *progname) {
+	fprintf(stderr, "Usage: %s [-r num-refcount-threads] "
+			"[-b num-bitops-threads] "
+			"[-d bitops-delay-multiplier] "
+			"[-D refcount-delay-multiplier] "
+			"-t run-time- in-seconds\n", progname);
+}
+
+
 int main(int argc, char **argv)
 {
 	int s, tnum, opt;
@@ -338,14 +399,15 @@ int main(int argc, char **argv)
 	struct thread_info *ref_tinfo, *bit_tinfo;
 	void *res;
 
-
 	num_ref_threads = 0;
 	num_bit_threads = 0;
+	ref_delay_mult = 1;
+	bit_delay_mult = 1;
 	status = RUNNING;
 	srand(time(NULL));
 
 	/* Get program parameters */
-	while ((opt = getopt(argc, argv, "t:r:b:")) != -1) {
+	while ((opt = getopt(argc, argv, "t:r:b:D:d:")) != -1) {
 		switch (opt) {
 		case 't':
 			run_time = strtoul(optarg, NULL, 0);
@@ -356,28 +418,28 @@ int main(int argc, char **argv)
 		case 'b':
 			num_bit_threads = strtoul(optarg, NULL, 0);
 			break;
+		case 'D':
+			ref_delay_mult = strtol(optarg, NULL, 0);
+			break;
+		case 'd':
+			bit_delay_mult = strtol(optarg, NULL, 0);
+			break;
 		default:
-			fprintf(stderr, "Usage: %s [-r num-refcount-threads] "
-					"[-b num-bitops-threads] -t run-time-"
-					"in-seconds\n", argv[0]);
+			print_usage(argv[0]);
 			exit(EXIT_FAILURE);
 		}
 	}
 
 	/* Run time must be specified */
 	if (!run_time) {
-		fprintf(stderr, "Usage: %s [-r num-refcount-threads] "
-				"[-b num-bitops-threads] -t run-time-"
-				"in-seconds\n", argv[0]);
+		print_usage(argv[0]);
 		exit(EXIT_FAILURE);
 	}
 
 	/* At least some threads must be specified */
 	if (!num_ref_threads && !num_bit_threads) {
 		fprintf(stderr, "Zero threads speficied!\n");
-		fprintf(stderr, "Usage: %s [-r num-refcount-threads] "
-				"[-b num-bitops-threads] -t run-time-"
-				"in-seconds\n", argv[0]);
+		print_usage(argv[0]);
 		exit(EXIT_FAILURE);
 	}
 	/*
@@ -405,6 +467,8 @@ int main(int argc, char **argv)
 	bit_tinfo = calloc(num_bit_threads, sizeof(struct thread_info));
 	if (bit_tinfo == NULL)
 		handle_error("calloc");
+
+	measure_delay();
 
 	/* Create refcounting threads */
 	for (tnum = 0; tnum < num_ref_threads; tnum++) {
@@ -457,7 +521,7 @@ int main(int argc, char **argv)
 
 	/* state should be 0, check for failure */
 	if (bh->b_state != 0) {
-		printf("FAIL state = %lu count = %d\n",
+		printf("TEST FAILED: state = %lu count = %d\n",
 			bh->b_state, jh->b_jcount);
 		free(bh);
 		free(jh);
@@ -466,7 +530,7 @@ int main(int argc, char **argv)
 
 	/* count should be 1, check for failure */
 	if (bh->b_state != 0) {
-		printf("FAIL state = %lu count = %d\n",
+		printf("TEST FAILED: state = %lu count = %d\n",
 			bh->b_state, jh->b_jcount);
 		free(bh);
 		free(jh);
