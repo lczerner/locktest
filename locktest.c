@@ -391,11 +391,15 @@ static void print_stats(struct thread_info *tinfo, int threads,
 }
 
 static inline void print_usage(char *progname) {
-	fprintf(stderr, "Usage: %s [-r num-refcount-threads] "
-			"[-b num-bitops-threads] "
-			"[-d bitops-delay-multiplier] "
-			"[-D refcount-delay-multiplier] "
-			"-t run-time- in-seconds\n", progname);
+	fprintf(stderr, "Usage: %s -t SEC [-r NUM] [-b NUM] [-d NULT] [-D MULT]\n"
+			"  -r\tNumber of refcounting threads\n"
+			"  -b\tNumber of bitops threads\n"
+			"  -d\tBitops delay multiplier (0 - disable)\n"
+			"  -D\tRefcount delay multiplier (0 - disable)\n"
+			"  -t\tRun time duration in seconds\n\n"
+			"At least one refcounting, or bitops thread must "
+			"be specified. Run time duration must be specified.\n"
+			"Example: %s -r100 -b20 -t60\n", progname, progname);
 }
 
 
