@@ -328,7 +328,7 @@ static void print_stats(struct thread_info *tinfo, int threads,
 	}
 
 	fprintf(stdout, "%d %s threads: Total: %llu Max/Min: %lu/%lu\n", threads,
-		 ref ? "refcounting" : "set_bit/clear_bit", sum, min, max);
+		 ref ? "refcounting" : "set_bit/clear_bit", sum, max, min);
 }
 
 int main(int argc, char **argv)
