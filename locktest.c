@@ -288,11 +288,18 @@ static inline void delay(int threads, int mult) {
 }
 
 
-static void test_failed(void) {
+static void test_failed(void)
+{
 	printf("Refcount failed: state = %lu count = %d\n",
 		bh->b_state, jh->b_jcount);
 	status = STOPPED;
 	exit(EXIT_FAILURE);
+}
+
+static inline void maybe_yield(int threads)
+{
+	if (!(rand() % (threads * 100)))
+		sched_yield();
 }
 
 /*
@@ -304,7 +311,7 @@ static void *thread_refcount(void *arg)
 	struct thread_info *tinfo = arg;
 
 	do {
-		sched_yield();
+		maybe_yield(num_ref_threads);
 
 		bit_spin_lock(LOCK_BIT, &bh->b_state);
 		if (jh->b_jcount <= 0)
@@ -314,7 +321,7 @@ static void *thread_refcount(void *arg)
 		delay(num_ref_threads, ref_delay_mult);
 		bit_spin_unlock(LOCK_BIT, &bh->b_state);
 
-		sched_yield();
+		maybe_yield(num_ref_threads);
 		
 		bit_spin_lock(LOCK_BIT, &bh->b_state);
 		--jh->b_jcount;
@@ -345,7 +352,7 @@ static void *thread_bitops(void *arg)
 			nr--;
 		set_bit(nr, &bh->b_state);
 		
-		sched_yield();
+		maybe_yield(num_bit_threads);
 
 		tinfo->n_operations++;
 		delay(num_bit_threads, bit_delay_mult);
