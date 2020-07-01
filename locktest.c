@@ -19,6 +19,12 @@
 #include <sched.h>
 #include <stdbool.h>
 
+
+/*
+ * All atomic functions and locking primitives copied over
+ * from linux kernel sources
+ */
+
 #define BITS_PER_LONG	64
 #define BIT_WORD(nr)	((nr) / BITS_PER_LONG)
 #define BIT_MASK(nr)	((unsigned long) 1 << ((nr) % BITS_PER_LONG))
@@ -227,6 +233,31 @@ static int bit_delay_mult;
 
 static unsigned long loops_in_us;
 
+#define RANDOM_MULT	9763541  /* prime */
+#define RANDOM_ADD	1076769773 /* prime */
+#define RANDOM_REFRESH	10000
+
+struct random_state {
+	unsigned long state;
+	long count;
+};
+#define DEFINE_RANDOM(name) struct random_state name = { 0, 0 }
+
+/*
+ * Very basic linear congruential random generator based on the
+ * code in kernel/torture.c
+ */
+unsigned long rnd(struct random_state *rs)
+{
+	if (--rs->count < 0) {
+		rs->state += (unsigned long)rand();
+		rs->count = RANDOM_REFRESH;
+	}
+	rs->state = rs->state * RANDOM_MULT + RANDOM_ADD;
+	return rs->state;
+}
+
+
 static __always_inline void delay_loop(__u64 __loops)
 {
 	unsigned long loops = (unsigned long)__loops;
@@ -270,7 +301,7 @@ static void measure_delay(void)
 	loops_in_us = loops / ((t2.tv_nsec - t1.tv_nsec) / 1000);
 }
 
-static inline void delay(int threads, int mult) {
+static inline void delay(struct random_state *rs, int threads, int mult) {
 	int shortdelay_us = 2 * mult;
 	int longdelay_us = 100 * 1000 * mult;
 
@@ -281,9 +312,9 @@ static inline void delay(int threads, int mult) {
 	 * Short delay to emulate code and occasional long delay
 	 * to emulate longer stalls
 	 */
-	if (!(rand() % (threads * 2000 * longdelay_us)))
+	if (!(rnd(rs) % (threads * 2000 * longdelay_us)))
 		delay_us(longdelay_us);
-	if (!(rand() % (threads * 2 * shortdelay_us)))
+	if (!(rnd(rs) % (threads * 2 * shortdelay_us)))
 		delay_us(shortdelay_us);
 }
 
@@ -309,6 +340,7 @@ static inline void maybe_yield(int threads)
 static void *thread_refcount(void *arg)
 {
 	struct thread_info *tinfo = arg;
+	DEFINE_RANDOM(rrs);
 
 	do {
 		maybe_yield(num_ref_threads);
@@ -318,7 +350,7 @@ static void *thread_refcount(void *arg)
 			test_failed();
 		jh->b_jcount++;
 		tinfo->n_operations++;
-		delay(num_ref_threads, ref_delay_mult);
+		delay(&rrs, num_ref_threads, ref_delay_mult);
 		bit_spin_unlock(LOCK_BIT, &bh->b_state);
 
 		maybe_yield(num_ref_threads);
@@ -328,7 +360,7 @@ static void *thread_refcount(void *arg)
 		if (jh->b_jcount <= 0)
 			test_failed();
 		tinfo->n_operations++;
-		delay(num_ref_threads, ref_delay_mult);
+		delay(&rrs, num_ref_threads, ref_delay_mult);
 		bit_spin_unlock(LOCK_BIT, &bh->b_state);
 
 	} while (status == RUNNING);
@@ -344,9 +376,10 @@ static void *thread_bitops(void *arg)
 {
 	int nr;
 	struct thread_info *tinfo = arg;
+	DEFINE_RANDOM(brs);
 
 	do {
-		delay(num_bit_threads, bit_delay_mult);
+		delay(&brs, num_bit_threads, bit_delay_mult);
 		nr = rand() % 64;
 		if (nr == LOCK_BIT)
 			nr--;
@@ -355,7 +388,7 @@ static void *thread_bitops(void *arg)
 		maybe_yield(num_bit_threads);
 
 		tinfo->n_operations++;
-		delay(num_bit_threads, bit_delay_mult);
+		delay(&brs, num_bit_threads, bit_delay_mult);
 
 		clear_bit(nr, &bh->b_state);
 		
