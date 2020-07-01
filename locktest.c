@@ -270,11 +270,11 @@ static void measure_delay(void)
 	loops_in_us = loops / ((t2.tv_nsec - t1.tv_nsec) / 1000);
 }
 
-static inline void delay(int threads, int delay) {
-	int shortdelay_us = 2 * delay;
-	int longdelay_us = 100 * 1000 * delay;
+static inline void delay(int threads, int mult) {
+	int shortdelay_us = 2 * mult;
+	int longdelay_us = 100 * 1000 * mult;
 
-	if (delay = 0)
+	if (mult == 0)
 		return;
 
 	/*
