@@ -598,7 +598,7 @@ int main(int argc, char **argv)
 		goto out_free;
 	}
 
-	if (jh->b_jcount != 0) {
+	if (jh->b_jcount != 1) {
 		printf("TEST FAILED: b_jcount must be 1 but is %d "
 		       "(b_state = 0x%08lx)\n", jh->b_jcount, bh->b_state);
 		goto out_free;
