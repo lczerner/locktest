@@ -164,10 +164,10 @@ static inline void bit_spin_unlock(unsigned int nr, volatile unsigned long *p)
 
 
 #define handle_error_en(en, msg) \
-	do { errno = en; perror(msg); exit(EXIT_FAILURE); } while (0)
+	do { errno = en; perror(msg); goto out_free; } while (0)
 
 #define handle_error(msg) \
-	do { perror(msg); exit(EXIT_FAILURE); } while (0)
+	do { perror(msg); goto out_free; } while (0)
 
 #define LOCK_BIT	22
 #define RUNNING		0
@@ -332,8 +332,8 @@ static inline void delay(struct random_state *rs, int threads, int mult) {
 
 static void test_failed(struct process_config *pc)
 {
-	printf("Refcount failed: state = %lu count = %d\n",
-		pc->bh->b_state, pc->jh->b_jcount);
+	printf("TEST FAILED: refcount must be at least 1 but is %d !!\n",
+		pc->jh->b_jcount);
 	pc->status = STOPPED;
 	exit(EXIT_FAILURE);
 }
@@ -413,7 +413,6 @@ static void *thread_bitops(void *arg)
 	return NULL;
 }
 
-
 static void print_stats(struct thread_info *tinfo, int threads,
 			bool ref)
 {
@@ -459,6 +458,7 @@ int main(int argc, char **argv)
 	struct journal_head *jh;
 	struct process_config *pc;
 	void *res;
+	int ret = EXIT_FAILURE;
 
 	pc = calloc(1, sizeof(struct process_config));
 	if (pc == NULL)
@@ -541,6 +541,11 @@ int main(int argc, char **argv)
 	if (bit_tinfo == NULL)
 		handle_error("calloc");
 
+	fprintf(stdout, "Running %d recounting / %d "
+			"bitops threads for %d seconds\n",
+			pc->num_ref_threads, pc->num_bit_threads,
+			pc->run_time);
+
 	/* Create refcounting threads */
 	for (tnum = 0; tnum < pc->num_ref_threads; tnum++) {
 		ref_tinfo[tnum].thread_num = tnum;
@@ -551,7 +556,6 @@ int main(int argc, char **argv)
 		if (s != 0)
 			handle_error_en(s, "pthread_create");
 	}
-	fprintf(stdout, "%d refcounting threads started\n", pc->num_ref_threads);
 
 	/* Create set_bit/clear_bit threads */
 	for (tnum = 0; tnum <  pc->num_bit_threads; tnum++) {
@@ -563,8 +567,6 @@ int main(int argc, char **argv)
 		if (s != 0)
 			handle_error_en(s, "pthread_create");
 	}
-	fprintf(stdout, "%d set_bit/clear_bit threads started\n", pc->num_bit_threads);
-	fprintf(stdout, "Running for %d seconds\n", pc->run_time);
 
 	/* Run the test for specified number of seconds */
 	sleep(pc->run_time);
@@ -586,33 +588,37 @@ int main(int argc, char **argv)
 			handle_error_en(s, "pthread_join");
 	}
 
+	/*
+	 * state should be 0 and count should be 1
+	 * check for failure
+	 */
+	if (bh->b_state != 0) {
+		printf("TEST FAILED: b_state must be 0 but is 0x%08lx "
+		       "(b_jcount = %d)\n", bh->b_state, jh->b_jcount);
+		goto out_free;
+	}
+
+	if (jh->b_jcount != 0) {
+		printf("TEST FAILED: b_jcount must be 1 but is %d "
+		       "(b_state = 0x%08lx)\n", jh->b_jcount, bh->b_state);
+		goto out_free;
+	}
+
 	print_stats(ref_tinfo, pc->num_ref_threads, true);
 	print_stats(bit_tinfo, pc->num_bit_threads, false);
+	ret = EXIT_SUCCESS;
 
-	free(ref_tinfo);
-	free(bit_tinfo);
-
-	/* state should be 0, check for failure */
-	if (bh->b_state != 0) {
-		printf("TEST FAILED: state = %lu count = %d\n",
-			bh->b_state, jh->b_jcount);
+out_free:
+	if (ref_tinfo)
+		free(ref_tinfo);
+	if (bit_tinfo)
+		free(bit_tinfo);
+	if (bh)
 		free(bh);
+	if (jh)
 		free(jh);
-		exit(EXIT_FAILURE);
-	}
+	if (pc)
+		free(pc);
 
-	/* count should be 1, check for failure */
-	if (bh->b_state != 0) {
-		printf("TEST FAILED: state = %lu count = %d\n",
-			bh->b_state, jh->b_jcount);
-		free(bh);
-		free(jh);
-		exit(EXIT_FAILURE);
-	}
-
-	printf("SUCCESS: state = %lu count = %d\n",
-		bh->b_state, jh->b_jcount);
-	free(bh);
-	free(jh);
-	exit(EXIT_SUCCESS);
+	exit(ret);
 }
