@@ -173,10 +173,31 @@ static inline void bit_spin_unlock(unsigned int nr, volatile unsigned long *p)
 #define RUNNING		0
 #define STOPPED		1
 
+struct process_config {
+	struct buffer_head *bh;		/* test struct for lock and bitops */
+	struct journal_head *jh;	/* test struct for refcount */
+
+	int status;		/* Status to control threads */
+	int num_ref_threads;	/* Number of refcount threads to create */
+	int num_bit_threads;	/* Number of bitops threads to create */
+
+	int ref_delay_mult;	/* Refcount delay multiplier */
+	int bit_delay_mult;	/* Bitops delay multiplier */
+
+
+	pid_t pid;		/* PID if running multiple processes */
+
+	struct thread_info *ref_tinfo;	/* Refcount thread info */
+	struct thread_info *bit_tinfo;	/* Bitops thread info */
+
+	int run_time;		/* Number of second to run threads for */
+};
+
 struct thread_info {
 	pthread_t thread_id;
 	unsigned int thread_num;
 	unsigned long n_operations;
+	struct process_config *pc;
 };
 
 /*
@@ -221,21 +242,11 @@ struct journal_head {
 	int b_jcount;
 };
 
-static struct buffer_head *bh;
-static struct journal_head *jh;
-
-static int status;			/* Status to control threads */
-static int num_ref_threads;		/* Number of refcount threads to create */
-static int num_bit_threads;		/* Number of bitops threads to create */
-
-static int ref_delay_mult;
-static int bit_delay_mult;
-
-static unsigned long loops_in_us;
-
 #define RANDOM_MULT	9763541  /* prime */
 #define RANDOM_ADD	1076769773 /* prime */
 #define RANDOM_REFRESH	10000
+
+unsigned long loops_in_us;	/* How many loops in us */
 
 struct random_state {
 	unsigned long state;
@@ -319,11 +330,11 @@ static inline void delay(struct random_state *rs, int threads, int mult) {
 }
 
 
-static void test_failed(void)
+static void test_failed(struct process_config *pc)
 {
 	printf("Refcount failed: state = %lu count = %d\n",
-		bh->b_state, jh->b_jcount);
-	status = STOPPED;
+		pc->bh->b_state, pc->jh->b_jcount);
+	pc->status = STOPPED;
 	exit(EXIT_FAILURE);
 }
 
@@ -340,30 +351,33 @@ static inline void maybe_yield(int threads)
 static void *thread_refcount(void *arg)
 {
 	struct thread_info *tinfo = arg;
+	struct process_config *pc = tinfo->pc;
+	struct buffer_head *bh = pc->bh;
+	struct journal_head *jh = pc->jh;
 	DEFINE_RANDOM(rrs);
 
 	do {
-		maybe_yield(num_ref_threads);
+		maybe_yield(pc->num_ref_threads);
 
 		bit_spin_lock(LOCK_BIT, &bh->b_state);
 		if (jh->b_jcount <= 0)
-			test_failed();
+			test_failed(pc);
 		jh->b_jcount++;
 		tinfo->n_operations++;
-		delay(&rrs, num_ref_threads, ref_delay_mult);
+		delay(&rrs, pc->num_ref_threads, pc->ref_delay_mult);
 		bit_spin_unlock(LOCK_BIT, &bh->b_state);
 
-		maybe_yield(num_ref_threads);
+		maybe_yield(pc->num_ref_threads);
 		
 		bit_spin_lock(LOCK_BIT, &bh->b_state);
 		--jh->b_jcount;
 		if (jh->b_jcount <= 0)
-			test_failed();
+			test_failed(pc);
 		tinfo->n_operations++;
-		delay(&rrs, num_ref_threads, ref_delay_mult);
+		delay(&rrs, pc->num_ref_threads, pc->ref_delay_mult);
 		bit_spin_unlock(LOCK_BIT, &bh->b_state);
 
-	} while (status == RUNNING);
+	} while (pc->status == RUNNING);
 
 	return NULL;
 }
@@ -374,25 +388,27 @@ static void *thread_refcount(void *arg)
  */
 static void *thread_bitops(void *arg)
 {
-	int nr;
 	struct thread_info *tinfo = arg;
+	struct process_config *pc = tinfo->pc;
+	struct buffer_head *bh = pc->bh;
+	int nr;
 	DEFINE_RANDOM(brs);
 
 	do {
-		delay(&brs, num_bit_threads, bit_delay_mult);
+		delay(&brs, pc->num_bit_threads, pc->bit_delay_mult);
 		nr = rand() % 64;
 		if (nr == LOCK_BIT)
 			nr--;
 		set_bit(nr, &bh->b_state);
 		
-		maybe_yield(num_bit_threads);
+		maybe_yield(pc->num_bit_threads);
 
 		tinfo->n_operations++;
-		delay(&brs, num_bit_threads, bit_delay_mult);
+		delay(&brs, pc->num_bit_threads, pc->bit_delay_mult);
 
 		clear_bit(nr, &bh->b_state);
 		
-	} while (status == RUNNING);
+	} while (pc->status == RUNNING);
 
 	return NULL;
 }
@@ -435,38 +451,45 @@ static inline void print_usage(char *progname) {
 			"Example: %s -r100 -b20 -t60\n", progname, progname);
 }
 
-
 int main(int argc, char **argv)
 {
 	int s, tnum, opt;
-	int run_time = 0;
 	struct thread_info *ref_tinfo, *bit_tinfo;
+	struct buffer_head *bh;
+	struct journal_head *jh;
+	struct process_config *pc;
 	void *res;
 
-	num_ref_threads = 0;
-	num_bit_threads = 0;
-	ref_delay_mult = 1;
-	bit_delay_mult = 1;
-	status = RUNNING;
+	pc = calloc(1, sizeof(struct process_config));
+	if (pc == NULL)
+		handle_error("calloc");
+
+	/* Initialize default parameters */
+	pc->num_ref_threads = 0;
+	pc->num_bit_threads = 0;
+	pc->ref_delay_mult = 1;
+	pc->bit_delay_mult = 1;
+	pc->status = RUNNING;
+
 	srand(time(NULL));
 
 	/* Get program parameters */
 	while ((opt = getopt(argc, argv, "t:r:b:D:d:")) != -1) {
 		switch (opt) {
 		case 't':
-			run_time = strtoul(optarg, NULL, 0);
+			pc->run_time = strtoul(optarg, NULL, 0);
 			break;
 		case 'r':
-			num_ref_threads = strtoul(optarg, NULL, 0);
+			pc->num_ref_threads = strtoul(optarg, NULL, 0);
 			break;
 		case 'b':
-			num_bit_threads = strtoul(optarg, NULL, 0);
+			pc->num_bit_threads = strtoul(optarg, NULL, 0);
 			break;
 		case 'D':
-			ref_delay_mult = strtol(optarg, NULL, 0);
+			pc->ref_delay_mult = strtol(optarg, NULL, 0);
 			break;
 		case 'd':
-			bit_delay_mult = strtol(optarg, NULL, 0);
+			pc->bit_delay_mult = strtol(optarg, NULL, 0);
 			break;
 		default:
 			print_usage(argv[0]);
@@ -475,17 +498,21 @@ int main(int argc, char **argv)
 	}
 
 	/* Run time must be specified */
-	if (!run_time) {
+	if (!pc->run_time) {
 		print_usage(argv[0]);
 		exit(EXIT_FAILURE);
 	}
 
 	/* At least some threads must be specified */
-	if (!num_ref_threads && !num_bit_threads) {
+	if (!pc->num_ref_threads && !pc->num_bit_threads) {
 		fprintf(stderr, "Zero threads speficied!\n");
 		print_usage(argv[0]);
 		exit(EXIT_FAILURE);
 	}
+
+	/* Measure the number of loops needed for us delay */
+	measure_delay();
+
 	/*
 	 * Set the initial state to zero, it needs to be zero after
 	 * were finished, otherwise set_bit/clear_bit are not atomic
@@ -494,6 +521,7 @@ int main(int argc, char **argv)
 	if (bh == NULL)
 		handle_error("malloc");
 	bh->b_state = 0;
+	pc->bh = bh;
 
 	/*
 	 * Set the initial reference to 1, it needs to be 1 after
@@ -503,62 +531,63 @@ int main(int argc, char **argv)
 	if (jh == NULL)
 		handle_error("malloc");
 	jh->b_jcount = 1;
+	pc->jh = jh;
 	
-	ref_tinfo = calloc(num_ref_threads, sizeof(struct thread_info));
+	ref_tinfo = calloc(pc->num_ref_threads, sizeof(struct thread_info));
 	if (ref_tinfo == NULL)
 		handle_error("calloc");
 
-	bit_tinfo = calloc(num_bit_threads, sizeof(struct thread_info));
+	bit_tinfo = calloc(pc->num_bit_threads, sizeof(struct thread_info));
 	if (bit_tinfo == NULL)
 		handle_error("calloc");
 
-	measure_delay();
-
 	/* Create refcounting threads */
-	for (tnum = 0; tnum < num_ref_threads; tnum++) {
+	for (tnum = 0; tnum < pc->num_ref_threads; tnum++) {
 		ref_tinfo[tnum].thread_num = tnum;
+		ref_tinfo[tnum].pc = pc;
 
 		s = pthread_create(&ref_tinfo[tnum].thread_id, NULL,
 				   &thread_refcount, &ref_tinfo[tnum]);
 		if (s != 0)
 			handle_error_en(s, "pthread_create");
 	}
-	fprintf(stdout, "%d refcounting threads started\n", num_ref_threads);
+	fprintf(stdout, "%d refcounting threads started\n", pc->num_ref_threads);
 
 	/* Create set_bit/clear_bit threads */
-	for (tnum = 0; tnum <  num_bit_threads; tnum++) {
+	for (tnum = 0; tnum <  pc->num_bit_threads; tnum++) {
 		bit_tinfo[tnum].thread_num = tnum;
+		bit_tinfo[tnum].pc = pc;
 
 		s = pthread_create(&bit_tinfo[tnum].thread_id, NULL,
 				   &thread_bitops, &bit_tinfo[tnum]);
 		if (s != 0)
 			handle_error_en(s, "pthread_create");
 	}
-	fprintf(stdout, "%d set_bit/clear_bit threads started\n", num_bit_threads);
-	fprintf(stdout, "Running for %d seconds\n", run_time);
+	fprintf(stdout, "%d set_bit/clear_bit threads started\n", pc->num_bit_threads);
+	fprintf(stdout, "Running for %d seconds\n", pc->run_time);
 
 	/* Run the test for specified number of seconds */
-	sleep(run_time);
+	sleep(pc->run_time);
 
 	/* Force the threads to stop */
-	status = STOPPED;
+	pc->status = STOPPED;
 
 	/* Wait for refcounting threads to finish */
-	for (tnum = 0; tnum < num_bit_threads; tnum++) {
+	for (tnum = 0; tnum < pc->num_bit_threads; tnum++) {
 		s = pthread_join(bit_tinfo[tnum].thread_id, &res);
 		if (s != 0)
 			handle_error_en(s, "pthread_join");
 	}
 
 	/* Wait for set_bit/clear_bit threads to finish */
-	for (tnum = 0; tnum < num_ref_threads; tnum++) {
+	for (tnum = 0; tnum < pc->num_ref_threads; tnum++) {
 		s = pthread_join(ref_tinfo[tnum].thread_id, &res);
 		if (s != 0)
 			handle_error_en(s, "pthread_join");
 	}
 
-	print_stats(ref_tinfo, num_ref_threads, true);
-	print_stats(bit_tinfo, num_bit_threads, false);
+	print_stats(ref_tinfo, pc->num_ref_threads, true);
+	print_stats(bit_tinfo, pc->num_bit_threads, false);
 
 	free(ref_tinfo);
 	free(bit_tinfo);
