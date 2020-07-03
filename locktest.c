@@ -340,7 +340,6 @@ static void test_failed(struct process_config *pc)
 	       "is %d !!\n", pc->pid, pc->jh->b_jcount);
 	pc->ret = EXIT_FAILURE;
 	status = STOPPED;
-	kill(getppid(), SIGINT);
 }
 
 static inline void maybe_yield(int threads)
@@ -365,11 +364,8 @@ static void *thread_refcount(void *arg)
 		maybe_yield(pc->num_ref_threads);
 
 		bit_spin_lock(LOCK_BIT, &bh->b_state);
-		if (jh->b_jcount <= 0) {
+		if (jh->b_jcount <= 0)
 			test_failed(pc);
-			bit_spin_unlock(LOCK_BIT, &bh->b_state);
-			break;
-		}
 		jh->b_jcount++;
 		tinfo->n_operations++;
 		delay(&rrs, pc->num_ref_threads, pc->ref_delay_mult);
@@ -379,11 +375,8 @@ static void *thread_refcount(void *arg)
 		
 		bit_spin_lock(LOCK_BIT, &bh->b_state);
 		--jh->b_jcount;
-		if (jh->b_jcount <= 0) {
+		if (jh->b_jcount <= 0)
 			test_failed(pc);
-			bit_spin_unlock(LOCK_BIT, &bh->b_state);
-			break;
-		}
 		tinfo->n_operations++;
 		delay(&rrs, pc->num_ref_threads, pc->ref_delay_mult);
 		bit_spin_unlock(LOCK_BIT, &bh->b_state);
