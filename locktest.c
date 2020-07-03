@@ -18,6 +18,7 @@
 #include <time.h>
 #include <sched.h>
 #include <stdbool.h>
+#include <sys/sysinfo.h>
 
 
 /*
@@ -440,19 +441,20 @@ static void print_stats(struct thread_info *tinfo, int threads,
 
 static inline void print_usage(char *progname) {
 	fprintf(stderr, "Usage: %s -t SEC [-r NUM] [-b NUM] [-d NULT] [-D MULT]\n"
-			"  -r\tNumber of refcounting threads\n"
-			"  -b\tNumber of bitops threads\n"
-			"  -d\tBitops delay multiplier (0 - disable)\n"
-			"  -D\tRefcount delay multiplier (0 - disable)\n"
-			"  -t\tRun time duration in seconds\n\n"
+			"  -h\tPrint this help\n"
+			"  -r\tNumber of refcounting threads (default:cpu count)\n"
+			"  -b\tNumber of bitops threads (default:cpu count / 4)\n"
+			"  -d\tBitops delay multiplier (default:1, 0 - disable)\n"
+			"  -D\tRefcount delay multiplier (default:1, 0 - disable)\n"
+			"  -t\tRun time duration in seconds (default:60)\n\n"
 			"At least one refcounting, or bitops thread must "
-			"be specified. Run time duration must be specified.\n"
+			"be set Run time duration must be set.\n"
 			"Example: %s -r100 -b20 -t60\n", progname, progname);
 }
 
 int main(int argc, char **argv)
 {
-	int s, tnum, opt;
+	int s, tnum, opt, ncpus;
 	struct thread_info *ref_tinfo, *bit_tinfo;
 	struct buffer_head *bh;
 	struct journal_head *jh;
@@ -460,21 +462,24 @@ int main(int argc, char **argv)
 	void *res;
 	int ret = EXIT_FAILURE;
 
+	ncpus = get_nprocs();
+
 	pc = calloc(1, sizeof(struct process_config));
 	if (pc == NULL)
 		handle_error("calloc");
 
 	/* Initialize default parameters */
-	pc->num_ref_threads = 0;
-	pc->num_bit_threads = 0;
+	pc->num_ref_threads = ncpus;
+	pc->num_bit_threads = (ncpus <= 4) ? 1 : ncpus / 4;
 	pc->ref_delay_mult = 1;
 	pc->bit_delay_mult = 1;
+	pc->run_time = 60;
 	pc->status = RUNNING;
 
 	srand(time(NULL));
 
 	/* Get program parameters */
-	while ((opt = getopt(argc, argv, "t:r:b:D:d:")) != -1) {
+	while ((opt = getopt(argc, argv, "t:r:b:D:d:h")) != -1) {
 		switch (opt) {
 		case 't':
 			pc->run_time = strtoul(optarg, NULL, 0);
@@ -491,6 +496,9 @@ int main(int argc, char **argv)
 		case 'd':
 			pc->bit_delay_mult = strtol(optarg, NULL, 0);
 			break;
+		case 'h':
+			print_usage(argv[0]);
+			exit(EXIT_SUCCESS);
 		default:
 			print_usage(argv[0]);
 			exit(EXIT_FAILURE);
