@@ -20,23 +20,21 @@ Run the test with default configuration
 
 	./locktest
 
-or modify the parameters to your liking
+or modify the parameters as you need
 
-	Usage: ./locktest -t SEC [-r NUM] [-b NUM] [-d NULT] [-D MULT]
+	Usage: ./locktest [-s] [-c SEC] [-t SEC] [-p PROC] [-r NUM] [-b NUM] [-d NULT] [-D MULT]
 	  -h	Print this help
 	  -s	Print stats at the end of the run
 	  -r	Number of refcounting threads (default:cpu count)
 	  -b	Number of bitops threads (default:cpu count / 4)
 	  -d	Bitops delay multiplier (default:1, 0 - disable)
 	  -D	Refcount delay multiplier (default:1, 0 - disable)
-	  -t	Run time duration in seconds (default:60)
+	  -t	Run time duration in seconds (default:600)
+	  -c	Check interval in secodns (default:random)
+	  -p	Number of instances of locktest to run in parallel (default: cpu count / 5)
 
-	Number of instances of locktest to run in parallel (default: cpu count / 5)At least one process and one refcounting, or bitops thread must be set Run time duration must be set.
-	Example: ./locktest -r100 -b20 -t60
-
-alternatively you can run it in the loop for example like this
-
-	while ./locktest -r100 -b20 -t60 -p20; do echo "OK"; done
+	At least one process and one refcounting, or bitops thread must be set Run time duration must be set.
+	Example: ./locktest -r100 -b20 -t600
 
 ## How it works
 

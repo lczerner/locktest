@@ -175,6 +175,7 @@ static inline void bit_spin_unlock(unsigned int nr, volatile unsigned long *p)
 #define LOCK_BIT	22
 #define RUNNING		0
 #define STOPPED		1
+#define TERMINATED	2
 
 struct process_config {
 	struct buffer_head *bh;		/* test struct for lock and bitops */
@@ -191,7 +192,9 @@ struct process_config {
 	struct thread_info *ref_tinfo;	/* Refcount thread info */
 	struct thread_info *bit_tinfo;	/* Bitops thread info */
 
-	int run_time;		/* Number of second to run threads for */
+	int run_time;		/* Number of seconds to run threads for */
+	int check_interval;	/* Number of seconds between checks */
+	int ci_range;		/* Range to generate random check interval */
 	int ret;		/* Return value for the process */
 	int nprocs;		/* Number of processes */
 };
@@ -445,23 +448,36 @@ static void print_stats(struct thread_info *tinfo, int threads,
 }
 
 static inline void print_usage(char *progname) {
-	fprintf(stderr, "Usage: %s -t SEC [-r NUM] [-b NUM] [-d NULT] [-D MULT]\n"
+	fprintf(stderr, "Usage: %s [-s] [-c SEC] [-t SEC] [-p PROC] [-r NUM] [-b NUM] [-d NULT] [-D MULT]\n"
 			"  -h\tPrint this help\n"
 			"  -s\tPrint stats at the end of the run\n"
 			"  -r\tNumber of refcounting threads (default:cpu count)\n"
 			"  -b\tNumber of bitops threads (default:cpu count / 4)\n"
 			"  -d\tBitops delay multiplier (default:1, 0 - disable)\n"
 			"  -D\tRefcount delay multiplier (default:1, 0 - disable)\n"
-			"  -t\tRun time duration in seconds (default:60)\n\n"
-			"  -p\rNumber of instances of locktest to run in "
-			"parallel (default: cpu count / 5)"
+			"  -t\tRun time duration in seconds (default:600)\n"
+			"  -c\tCheck interval in secodns (default:random)\n"
+			"  -p\tNumber of instances of locktest to run in "
+			"parallel (default: cpu count / 5)\n\n"
 			"At least one process and one refcounting, or bitops "
 			"thread must be set Run time duration must be set.\n"
-			"Example: %s -r100 -b20 -t60\n", progname, progname);
+			"Example: %s -r100 -b20 -t600\n", progname, progname);
 }
 
 static void stop_threads(int signal) {
 	status = STOPPED;
+}
+
+static void terminate_threads(int signal) {
+	/*
+	 * TODO: There is a small window where SIGINT and SIGTERM can
+	 * be ignored. This can be solved by either masking out the
+	 * signals before parent calls kill() on process group, or killing
+	 * child processes by theis pids. But I don't consider it to
+	 * be a important issue ATM.
+	 */
+	if (status == RUNNING)
+		status = TERMINATED;
 }
 
 /* Parent controlling the processes */
@@ -470,7 +486,7 @@ static int parent(struct process_config *pc) {
 	struct sigaction sig;
 	pid_t wpid;
 
-	/* Set up alarm to go off after run_time */
+	/* Catch SIGALRM signal */
 	memset(&sig, 0, sizeof(sig));
 	sig.sa_handler = stop_threads;
 	if (sigaction(SIGALRM, &sig, 0)) {
@@ -480,6 +496,7 @@ static int parent(struct process_config *pc) {
 	}
 
 	/* Catch SIGINT and SIGTERM signals to stop child processes */
+	sig.sa_handler = terminate_threads;
 	if (sigaction(SIGINT, &sig, 0)) {
 		perror("sigaction");
 		kill(0, SIGINT);
@@ -491,7 +508,8 @@ static int parent(struct process_config *pc) {
 		goto wait_loop;
 	}
 
-	if (alarm(pc->run_time)) {
+	/* Set up alarm to go off after check_interval */
+	if (alarm(pc->check_interval)) {
 		perror("alarm");
 		kill(0, SIGINT);
 	}
@@ -523,22 +541,18 @@ wait_loop:
 			ret = err;
 	}
 
-	/* No errors encountered */
-	if (ret == EXIT_SUCCESS)
-		fprintf(stdout, "No problems found\n");
 	return ret;
 }
 
 int main(int argc, char **argv)
 {
-	int err, tnum, opt, ncpus, id, p, stats;
+	int err, tnum, opt, ncpus, id, p, stats, ret;
 	struct thread_info *ref_tinfo, *bit_tinfo;
 	struct buffer_head *bh;
 	struct journal_head *jh;
 	struct process_config *pc;
 	struct sigaction sig;
 	void *res;
-	int ret = EXIT_FAILURE;
 
 	pc = calloc(1, sizeof(struct process_config));
 	if (pc == NULL)
@@ -550,18 +564,22 @@ int main(int argc, char **argv)
 	pc->num_bit_threads = (ncpus <= 4) ? 1 : ncpus / 4;
 	pc->ref_delay_mult = 1;
 	pc->bit_delay_mult = 1;
-	pc->run_time = 60;
-	status = RUNNING;
+	pc->run_time = 600;
+	pc->ci_range = 60;
 	pc->nprocs = (ncpus <= 5) ? 1 : ncpus / 5;
 	stats = 0;
 
 	srand(time(NULL));
 
 	/* Get program parameters */
-	while ((opt = getopt(argc, argv, "t:r:b:D:d:hp:s")) != -1) {
+	while ((opt = getopt(argc, argv, "t:c:r:b:D:d:hp:s")) != -1) {
 		switch (opt) {
 		case 't':
 			pc->run_time = strtoul(optarg, NULL, 0);
+			break;
+		case 'c':
+			pc->check_interval = strtoul(optarg, NULL, 0);
+			pc->ci_range = 0;
 			break;
 		case 'r':
 			pc->num_ref_threads = strtoul(optarg, NULL, 0);
@@ -648,6 +666,11 @@ int main(int argc, char **argv)
 			pc->nprocs, pc->num_ref_threads,
 			pc->num_bit_threads, pc->run_time);
 
+again:
+	/* Initialize variables for the new run */
+	status = RUNNING;
+	ret = EXIT_FAILURE;
+
 	/* Spawn nprocs processes */
 	for(p = 0; p < pc->nprocs; p++) {
 		id = fork();
@@ -661,7 +684,32 @@ int main(int argc, char **argv)
 
 	/* Parent process ends up here*/
 	if (id > 0) {
+		/*
+		 * We restart the processes each check_interval which
+		 * makes it possible to verify the refcount and state.
+		 * This could be done more elegantly using locking, but
+		 * given that we expect the locking to be broken, I'd
+		 * rather avoid it and do it this *crude* way.
+		 */
+		if (pc->ci_range > 0)
+			pc->check_interval = 1 + (rand() % pc->ci_range);
+
+		if (pc->check_interval > pc->run_time)
+			pc->check_interval = pc->run_time;
+
 		ret = parent(pc);
+		if (ret != EXIT_SUCCESS)
+			goto out_free;
+
+		pc->run_time -= pc->check_interval;
+
+		if (pc->run_time > 0 && status != TERMINATED)
+			goto again;
+
+		/* No errors encountered */
+		if (ret == EXIT_SUCCESS)
+			fprintf(stdout, "No problems found\n");
+
 		goto out_free;
 	}
 
@@ -710,8 +758,10 @@ int main(int argc, char **argv)
 	}
 
 	/* Some threads might have failed already */
-	if (pc->ret)
-		return pc->ret;
+	if (pc->ret) {
+		ret = pc->ret;
+		goto out_free;
+	}
 
 	/* b_state must be 0 */
 	if (bh->b_state != 0) {
