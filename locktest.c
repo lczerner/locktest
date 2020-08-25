@@ -469,7 +469,6 @@ static int parent(struct process_config *pc) {
 	int s, err, ret = EXIT_SUCCESS;
 	struct sigaction sig;
 	pid_t wpid;
-	int nprocs = pc->nprocs;
 
 	/* Set up alarm to go off after run_time */
 	memset(&sig, 0, sizeof(sig));
@@ -499,7 +498,7 @@ static int parent(struct process_config *pc) {
 
 wait_loop:
 	/* Wait for all the processess to finish */
-	while (nprocs > 0) {
+	while (1) {
 		wpid = wait(&s);
 
 		/* wait failed or was interrupted */
@@ -508,8 +507,8 @@ wait_loop:
 				break;
 			} else if (errno == EINTR) {
 				kill(0, SIGINT);
-				continue;
 			}
+			continue;
 		}
 
 		if (WIFEXITED(s)) {
@@ -522,7 +521,6 @@ wait_loop:
 
 		if (err)
 			ret = err;
-		nprocs--;
 	}
 
 	/* No errors encountered */
