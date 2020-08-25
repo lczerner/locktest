@@ -479,6 +479,19 @@ static int parent(struct process_config *pc) {
 		kill(0, SIGINT);
 		goto wait_loop;
 	}
+
+	/* Catch SIGINT and SIGTERM signals to stop child processes */
+	if (sigaction(SIGINT, &sig, 0)) {
+		perror("sigaction");
+		kill(0, SIGINT);
+		goto wait_loop;
+	}
+	if (sigaction(SIGTERM, &sig, 0)) {
+		perror("sigaction");
+		kill(0, SIGINT);
+		goto wait_loop;
+	}
+
 	if (alarm(pc->run_time)) {
 		perror("alarm");
 		kill(0, SIGINT);
@@ -637,13 +650,6 @@ int main(int argc, char **argv)
 			pc->nprocs, pc->num_ref_threads,
 			pc->num_bit_threads, pc->run_time);
 
-	/* Setup a handler for the SIGINT to stop all threads*/
-	memset(&sig, 0, sizeof(sig));
-	sig.sa_handler = stop_threads;
-	if (sigaction(SIGINT, &sig, 0)) {
-		handle_error("signal");
-	}
-
 	/* Spawn nprocs processes */
 	for(p = 0; p < pc->nprocs; p++) {
 		id = fork();
@@ -660,6 +666,14 @@ int main(int argc, char **argv)
 		ret = parent(pc);
 		goto out_free;
 	}
+
+	/* Setup a handler for the SIGINT to stop all threads*/
+	memset(&sig, 0, sizeof(sig));
+	sig.sa_handler = stop_threads;
+	if (sigaction(SIGINT, &sig, 0)) {
+		handle_error("signal");
+	}
+
 
 	/* Create refcounting threads */
 	for (tnum = 0; tnum < pc->num_ref_threads; tnum++) {
