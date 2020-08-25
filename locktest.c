@@ -476,12 +476,12 @@ static int parent(struct process_config *pc) {
 	sig.sa_handler = stop_threads;
 	if (sigaction(SIGALRM, &sig, 0)) {
 		perror("sigaction");
-		kill(-getpid(), SIGINT);
+		kill(0, SIGINT);
 		goto wait_loop;
 	}
 	if (alarm(pc->run_time)) {
 		perror("alarm");
-		kill(-getpid(), SIGINT);
+		kill(0, SIGINT);
 	}
 
 wait_loop:
@@ -494,7 +494,7 @@ wait_loop:
 			if (errno == ECHILD) {
 				break;
 			} else if (errno == EINTR) {
-				kill(-getpid(), SIGINT);
+				kill(0, SIGINT);
 				continue;
 			}
 		}
