@@ -665,6 +665,7 @@ int main(int argc, char **argv)
 			"recounting and %d bitops threads for %d seconds\n",
 			pc->nprocs, pc->num_ref_threads,
 			pc->num_bit_threads, pc->run_time);
+	fflush(stdout);
 
 again:
 	/* Initialize variables for the new run */
